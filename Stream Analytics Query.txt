@@ -1,0 +1,56 @@
+SELECT
+    t.transaction_id, 
+    t.user_id, 
+    t.timestamp, 
+    t.amount,
+    t.currency,
+    t.location, 
+    t.device,
+    t.ip_address,
+    t.merchant_id,
+    t.transaction_type,
+    t.is_fraud,
+    CASE 
+        WHEN t.amount > 5000 THEN 'High Amount Fraud'
+        WHEN u.location <> t.location THEN 'Unusual Location Fraud'
+        ELSE 'Legitimate Transaction'
+    END AS fraud_reason,
+    -- Detect Rapid Transactions (3+ transactions from the same user_id and IP within a 10-minute window)
+    CASE 
+        WHEN COUNT(*) OVER (PARTITION BY t.user_id, t.ip_address, TumblingWindow(minute, 10, t.timestamp)) >= 3 
+        THEN 'Rapid Transaction Fraud' 
+        ELSE 'Normal Transaction' 
+    END AS rapid_transaction_flag
+INTO 
+    [fd-adls]  -- ADLS Sink or your desired sink
+FROM 
+    [fd-eventhub] t -- Input stream containing transactions
+LEFT JOIN 
+    [fd-location] u  -- User location reference table
+    ON t.user_id = u.userID 
+WHERE 
+    t.transaction_id IS NOT NULL
+    AND t.user_id IS NOT NULL
+    AND t.timestamp IS NOT NULL
+    AND t.amount IS NOT NULL
+    AND t.location IS NOT NULL  -- Filter out transactions with missing critical fields
+GROUP BY 
+    t.transaction_id, 
+    t.user_id, 
+    t.timestamp, 
+    t.amount, 
+    t.currency,
+    t.location, 
+    t.device,
+    t.ip_address,
+    t.merchant_id,
+    t.transaction_type,
+    t.is_fraud,
+    u.location,  -- Including user location in the group by
+    TumblingWindow(minute, 10); -- Tumbling window over t.timestamp
+
+-- This ensures the windowing is applied to the 10-minute range
+
+SELECT *
+INTO [UniqueTransactions]  -- Cosmos DB Sink
+FROM [fd-eventhub] t
