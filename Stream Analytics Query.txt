@@ -1,0 +1,49 @@
+SELECT 
+    t.transaction_id, 
+    t.user_id, 
+    t.timestamp, 
+    t.amount,
+    t.currency,
+    t.location, 
+    t.device,
+    t.ip_address,
+    t.merchant_id,
+    t.transaction_type,
+    t.is_fraud,
+    
+    -- Detecting potential fraud reasons
+    CASE 
+        WHEN t.amount > 5000 THEN 'High Amount Fraud'
+        WHEN u.location <> t.location THEN 'Unusual Location Fraud'
+        ELSE 'Legitimate Transaction'
+    END AS fraud_reason,
+
+    -- Flagging continuous transactions from the same user
+    CASE 
+        WHEN LAG(t.user_id) OVER (
+            PARTITION BY t.user_id 
+            LIMIT DURATION(second, 60)  -- Check within 60 seconds window
+        ) = t.user_id 
+        THEN 'Rapid Transaction Fraud' 
+        ELSE 'First Transaction'
+    END AS rapid_transaction_flag
+
+INTO 
+    [fd-adls]
+FROM 
+    [fd-eventhub] t TIMESTAMP BY t.timestamp 
+
+LEFT JOIN 
+    [fd-location] u
+    ON t.user_id = u.userID
+
+WHERE 
+    t.transaction_id IS NOT NULL
+    AND t.user_id IS NOT NULL
+    AND t.timestamp IS NOT NULL
+    AND t.amount IS NOT NULL
+    AND t.location IS NOT NULL;
+
+SELECT *
+INTO [UniqueTransactions]  -- Cosmos DB Sink
+FROM [fd-eventhub] t
